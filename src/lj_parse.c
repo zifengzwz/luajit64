@@ -98,7 +98,7 @@ static int expr_numiszero(ExpDesc *e)
 typedef struct FuncScope {
   struct FuncScope *prev;	/* Link to outer scope. */
   MSize vstart;			/* Start of block-local variables. */
-  uint8_t nactvar;		/* Number of active vars outside the scope. */
+  uint16_t nactvar;		/* Number of active vars outside the scope. */
   uint8_t flags;		/* Scope flags. */
 } FuncScope;
 
@@ -137,9 +137,9 @@ typedef struct FuncState {
   BCPos bclim;			/* Limit of bytecode stack. */
   MSize vbase;			/* Base of variable stack for this function. */
   uint8_t flags;		/* Prototype flags. */
-  uint8_t numparams;		/* Number of parameters. */
-  uint8_t framesize;		/* Fixed frame size. */
-  uint8_t nuv;			/* Number of upvalues */
+  uint16_t numparams;		/* Number of parameters. */
+  uint16_t framesize;		/* Fixed frame size. */
+  uint16_t nuv;			/* Number of upvalues */
   VarIndex varmap[LJ_MAX_LOCVAR];  /* Map from register to variable idx. */
   VarIndex uvmap[LJ_MAX_UPVAL];	/* Map from upvalue to variable idx. */
   VarIndex uvtmp[LJ_MAX_UPVAL];	/* Temporary upvalue map. */
@@ -1361,8 +1361,8 @@ static void fs_fixup_k(FuncState *fs, GCproto *pt, void *kptr)
   TValue *array;
   Node *node;
   MSize i, hmask;
-  checklimitgt(fs, fs->nkn, BCMAX_D+1, "constants");
-  checklimitgt(fs, fs->nkgc, BCMAX_D+1, "constants");
+  checklimitgt(fs, fs->nkn, BCMAX_D, "constants");
+  checklimitgt(fs, fs->nkgc, BCMAX_D, "constants");
   setmref(pt->k, kptr);
   pt->sizekn = fs->nkn;
   pt->sizekgc = fs->nkgc;

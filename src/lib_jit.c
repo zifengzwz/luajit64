@@ -278,7 +278,7 @@ LJLIB_CF(jit_util_funcbc)
     BCIns ins = proto_bc(pt)[pc];
     BCOp op = bc_op(ins);
     lj_assertL(op < BC__MAX, "bad bytecode op %d", op);
-    setintV(L->top, ins);
+    setnumV(L->top, (lua_Number)(uint64_t)ins);
     setintV(L->top+1, lj_bc_mode[op]);
     L->top += 2;
     if (lineinfo) {

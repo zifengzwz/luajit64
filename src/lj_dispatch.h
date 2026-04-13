@@ -123,7 +123,7 @@ typedef struct GG_State {
 #define GG_DISP2STATIC	(GG_LEN_DDISP*(int)sizeof(ASMFunction))
 
 #define hotcount_get(gg, pc) \
-  (gg)->hotcount[(u32ptr(pc)>>2) & (HOTCOUNT_SIZE-1)]
+  (gg)->hotcount[(u32ptr(pc)>>3) & (HOTCOUNT_SIZE-1)]
 #define hotcount_set(gg, pc, val) \
   (hotcount_get((gg), (pc)) = (HotCount)(val))
 

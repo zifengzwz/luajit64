@@ -195,18 +195,18 @@
 |.macro ins_A; .endmacro
 |.macro ins_AD; .endmacro
 |.macro ins_AJ; .endmacro
-|.macro ins_ABC; movzx RBd, RCH; movzx RCd, RCL; .endmacro
-|.macro ins_AB_; movzx RBd, RCH; .endmacro
-|.macro ins_A_C; movzx RCd, RCL; .endmacro
-|.macro ins_AND; not RD; .endmacro
+|.macro ins_ABC; movzx RBd, PC_RB; movzx RCd, PC_RC; .endmacro
+|.macro ins_AB_; movzx RBd, PC_RB; .endmacro
+|.macro ins_A_C; movzx RCd, PC_RC; .endmacro
+|.macro ins_AND; not RDd; movsxd RD, RDd; .endmacro
 |
-|// Instruction decode+dispatch. Carefully tuned (nope, lodsd is not faster).
+|// Instruction decode+dispatch for 64-bit bytecode (OP/A=16bit, D=32bit).
 |.macro ins_NEXT
-|  mov RCd, [PC]
-|  movzx RAd, RCH
-|  movzx OP, RCL
-|  add PC, 4
-|  shr RCd, 16
+|  mov RC, [PC]
+|  movzx RAd, word [PC+2]
+|  movzx OP, word [PC]
+|  add PC, 8
+|  mov RCd, dword [PC-4]
 |  jmp aword [DISPATCH+OP*8]
 |.endmacro
 |
@@ -232,10 +232,9 @@
 |.macro ins_callt
 |  // BASE = new base, RB = LFUNC, RD = nargs+1, [BASE-8] = PC
 |  mov PC, LFUNC:RB->pc
-|  mov RAd, [PC]
-|  movzx OP, RAL
-|  movzx RAd, RAH
-|  add PC, 4
+|  movzx OP, word [PC]
+|  movzx RAd, word [PC+2]
+|  add PC, 8
 |  jmp aword [DISPATCH+OP*8]
 |.endmacro
 |
@@ -304,14 +303,16 @@
 |.macro mov_true, reg; mov64 reg, (int64_t)~((uint64_t)2<<47); .endmacro
 |
 |// These operands must be used with movzx.
-|.define PC_OP, byte [PC-4]
-|.define PC_RA, byte [PC-3]
-|.define PC_RB, byte [PC-1]
-|.define PC_RC, byte [PC-2]
-|.define PC_RD, word [PC-2]
+|.define PC_OP, word [PC-8]
+|.define PC_RA, word [PC-6]
+|.define PC_RB, word [PC-2]
+|.define PC_RC, word [PC-4]
+|.define PC_RD, dword [PC-4]
 |
 |.macro branchPC, reg
-|  lea PC, [PC+reg*4-BCBIAS_J*4]
+|  sub reg, BCBIAS_J
+|  movsxd RD, RDd
+|  lea PC, [PC+RD*8]
 |.endmacro
 |
 |// Assumes DISPATCH is relative to GL.
@@ -321,9 +322,11 @@
 #define PC2PROTO(field)  ((int)offsetof(GCproto, field)-(int)sizeof(GCproto))
 |
 |// Decrement hashed hotcount and trigger trace recorder if zero.
+|// PC is 8-byte aligned (64-bit BCIns), so shr by 2 gives (pc>>2)&mask
+|// which equals ((pc>>3)&63)*2, matching hotcount_get(gg,pc) = (pc>>3)&63.
 |.macro hotloop, reg
 |  mov reg, PCd
-|  shr reg, 1
+|  shr reg, 2
 |  and reg, HOTCOUNT_PCMASK
 |  sub word [DISPATCH+reg+GG_DISP2HOT], HOTCOUNT_LOOP
 |  jb ->vm_hotloop
@@ -331,7 +334,7 @@
 |
 |.macro hotcall, reg
 |  mov reg, PCd
-|  shr reg, 1
+|  shr reg, 2
 |  and reg, HOTCOUNT_PCMASK
 |  sub word [DISPATCH+reg+GG_DISP2HOT], HOTCOUNT_CALL
 |  jb ->vm_hotcall
@@ -535,8 +538,8 @@ static void build_subroutines(BuildCtx *ctx)
   |  // BASE = new base, RD = nargs+1, RB = L, PC = first PC
   |  lea RD, [BASE+NARGS:RD*8-8]
   |1:
-  |  movzx RAd, byte [PC-4+PC2PROTO(framesize)]
-  |  add PC, 4				// Must point after first instruction.
+  |  movzx RAd, word [PC-8+PC2PROTO(framesize)]
+  |  add PC, 8				// Must point after first instruction.
   |  mov L:RB->base, BASE
   |  mov L:RB->top, RD
   |  mov SAVE_PC, PC
@@ -891,7 +894,7 @@ static void build_subroutines(BuildCtx *ctx)
   |//-- Comparison metamethods ---------------------------------------------
   |
   |->vmeta_comp:
-  |  movzx RDd, PC_RD
+  |  mov RDd, PC_RD
   |  movzx RAd, PC_RA
   |  mov L:RB, SAVE_L
   |  mov L:RB->base, BASE		// Caveat: CARG2/CARG3 == BASE.
@@ -912,16 +915,16 @@ static void build_subroutines(BuildCtx *ctx)
   |  cmp RC, 1
   |  ja ->vmeta_binop
   |4:
-  |  lea PC, [PC+4]
+  |  lea PC, [PC+8]
   |  jb >6
   |5:
-  |  movzx RDd, PC_RD
+  |  mov RDd, PC_RD
   |  branchPC RD
   |6:
   |  ins_next
   |
   |->cont_condt:			// BASE = base, RC = result
-  |  add PC, 4
+  |  add PC, 8
   |  mov ITYPE, [RC]
   |  sar ITYPE, 47
   |  cmp ITYPEd, LJ_TISTRUECOND		// Branch if result is true.
@@ -1055,7 +1058,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  jmp ->vm_call_dispatch
   |
   |->vmeta_len:
-  |  movzx RDd, PC_RD
+  |  mov RDd, PC_RD
   |  mov L:RB, SAVE_L
   |  mov L:RB->base, BASE
   |  lea CARG2, [BASE+RD*8]		// Caveat: CARG2 == BASE
@@ -1067,7 +1070,7 @@ static void build_subroutines(BuildCtx *ctx)
 #if LJ_52
   |  test RC, RC
   |  jne ->vmeta_binop			// Binop call for compatibility.
-  |  movzx RDd, PC_RD
+  |  mov RDd, PC_RD
   |  mov TAB:CARG1, [BASE+RD*8]
   |  cleartp TAB:CARG1
   |  jmp ->BC_LEN_Z
@@ -1118,13 +1121,12 @@ static void build_subroutines(BuildCtx *ctx)
   |  mov CARG2, RA			// Caveat: CARG2 == BASE
   |  mov L:CARG1, L:RB			// Caveat: CARG1 == RA
   |  mov SAVE_PC, PC
-  |  call extern lj_meta_for	// (lua_State *L, TValue *base)
-  |  mov BASE, L:RB->base
-  |  mov RCd, [PC-4]
-  |  movzx RAd, RCH
-  |  movzx OP, RCL
-  |  shr RCd, 16
-  |  jmp aword [DISPATCH+OP*8+GG_DISP2STATIC]	// Retry FORI or JFORI.
+|  call extern lj_meta_for	// (lua_State *L, TValue *base)
+|  mov BASE, L:RB->base
+|  movzx RAd, word [PC-6]
+|  movzx OP, word [PC-8]
+|  mov RCd, dword [PC-4]
+|  jmp aword [DISPATCH+OP*8+GG_DISP2STATIC]	// Retry FORI or JFORI.
   |
   |//-----------------------------------------------------------------------
   |//-- Fast functions -----------------------------------------------------
@@ -1698,7 +1700,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  test PCd, FRAME_TYPE
   |  jnz >7
   |5:
-  |  cmp PC_RB, RDL			// More results expected?
+  |  cmp PC_RB, RDW			// More results expected?
   |  ja >6
   |  // Adjust BASE. KBASE is assumed to be set for the calling frame.
   |  movzx RAd, PC_RA
@@ -2249,11 +2251,11 @@ static void build_subroutines(BuildCtx *ctx)
   |  movzx RAd, PC_RA
   |5:
   |  movzx OP, PC_OP
-  |  movzx RDd, PC_RD
+  |  mov RDd, PC_RD
   |  jmp aword [DISPATCH+OP*8+GG_DISP2STATIC]	// Re-dispatch to static ins.
   |
   |->cont_hook:				// Continue from hook yield.
-  |  add PC, 4
+  |  add PC, 8
   |  mov RA, [RB-40]
   |  mov MULTRES, RAd			// Restore MULTRES for *M ins.
   |  jmp <4
@@ -2263,7 +2265,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  mov LFUNC:RB, [BASE-16]		// Same as curr_topL(L).
   |  cleartp LFUNC:RB
   |  mov RB, LFUNC:RB->pc
-  |  movzx RDd, byte [RB+PC2PROTO(framesize)]
+  |  movzx RDd, word [RB+PC2PROTO(framesize)]
   |  lea RD, [BASE+RD*8]
   |  mov L:RB, SAVE_L
   |  mov L:RB->base, BASE
@@ -2482,12 +2484,11 @@ static void build_subroutines(BuildCtx *ctx)
   |  mov L:RB->base, BASE
   |  mov qword [DISPATCH+DISPATCH_GL(jit_base)], 0
   |  set_vmstate INTERP
-  |  // Modified copy of ins_next which handles function header dispatch, too.
-  |  mov RCd, [PC]
-  |  movzx RAd, RCH
-  |  movzx OP, RCL
-  |  add PC, 4
-  |  shr RCd, 16
+|  // Modified copy of ins_next which handles function header dispatch, too.
+|  movzx RAd, word [PC+2]
+|  movzx OP, word [PC]
+|  add PC, 8
+|  mov RCd, dword [PC-4]
   |  cmp MULTRES, -17			// Static dispatch?
   |  je >5
   |  cmp OP, BC_FUNCF			// Function header?
@@ -2512,14 +2513,16 @@ static void build_subroutines(BuildCtx *ctx)
   |  mov KBASE, [KBASE+PC2PROTO(k)]
   |  jmp <2
   |
-  |5:  // Dispatch to static entry of original ins replaced by BC_JLOOP.
-  |  mov RA, [DISPATCH+DISPATCH_J(trace)]
-  |  mov TRACE:RA, [RA+RD*8]
-  |  mov RCd, TRACE:RA->startins
-  |  movzx RAd, RCH
-  |  movzx OP, RCL
-  |  shr RCd, 16
-  |  jmp aword [DISPATCH+OP*8+GG_DISP2STATIC]
+|5:  // Dispatch to static entry of original ins replaced by BC_JLOOP.
+|  mov RA, [DISPATCH+DISPATCH_J(trace)]
+|  mov TRACE:RA, [RA+RD*8]
+|  // startins is BCIns (64-bit): OP[15:0] A[31:16] D[63:32]
+|  mov RC, TRACE:RA->startins		// Load full 64-bit startins into RC(rax)
+|  movzx RBd, ax			// OP(RBd) = rax[15:0]
+|  shr RC, 16
+|  movzx RAd, ax			// RA(ecx) = rax[15:0] (originally bits 31:16)
+|  shr RCd, 16				// RCd = high 32-bits of original startins = D/RC
+|  jmp aword [DISPATCH+OP*8+GG_DISP2STATIC]
   |
   |9:  // Rethrow error from the right C frame.
   |  mov CARG2d, RDd
@@ -2865,11 +2868,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |.if DUALNUM
     |  cmp ITYPEd, LJ_TISNUM; jne >7
     |  cmp RBd, LJ_TISNUM; jne >8
-    |  add PC, 4
+    |  add PC, 8
     |  cmp RAd, RDd
     |  jmp_comp jge, jl, jg, jle, >9
     |6:
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  branchPC RD
     |9:
     |  ins_next
@@ -2897,7 +2900,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  movd xmm1, RA
     |3:
-    |  add PC, 4
+    |  add PC, 8
     |  ucomisd xmm0, xmm1
     |  // Unordered: all of ZF CF PF set, ordered: PF clear.
     |  // To preserve NaN semantics GE/GT branch on unordered, but LT/LE don't.
@@ -2906,7 +2909,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  jmp <6
     |.else
     |  jmp_comp jbe, ja, jb, jae, >1
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  branchPC RD
     |1:
     |  ins_next
@@ -2918,7 +2921,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_AD	// RA = src1, RD = src2, JMP with RD = target
     |  mov RB, [BASE+RD*8]
     |  mov ITYPE, [BASE+RA*8]
-    |  add PC, 4
+    |  add PC, 8
     |  mov RD, RB
     |  mov RA, ITYPE
     |  sar RB, 47
@@ -2932,7 +2935,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     } else {
       |  je >9
     }
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  branchPC RD
     |9:
     |  ins_next
@@ -2973,7 +2976,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   iseqne_end:
     if (vk) {
       |1:				// EQ: Branch to the target.
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  branchPC RD
       |2:				// NE: Fallthrough to next instruction.
       |.if not FFI
@@ -2984,7 +2987,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       |3:
       |.endif
       |2:				// NE: Branch to the target.
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  branchPC RD
       |1:				// EQ: Fallthrough to next instruction.
     }
@@ -3039,7 +3042,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     vk = op == BC_ISEQS;
     |  ins_AND	// RA = src, RD = str const, JMP with RD = target
     |  mov RB, [BASE+RA*8]
-    |  add PC, 4
+    |  add PC, 8
     |  checkstr RB, >3
     |  cmp RB, [KBASE+RD*8]
   iseqne_test:
@@ -3053,7 +3056,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     vk = op == BC_ISEQN;
     |  ins_AD	// RA = src, RD = num const, JMP with RD = target
     |  mov RB, [BASE+RA*8]
-    |  add PC, 4
+    |  add PC, 8
     |.if DUALNUM
     |  checkint RB, >7
     |  mov RD, [KBASE+RD*8]
@@ -3064,7 +3067,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     } else {
       |  je >9
     }
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  branchPC RD
     |9:
     |  ins_next
@@ -3099,12 +3102,12 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_AND	// RA = src, RD = primitive type (~), JMP with RD = target
     |  mov RB, [BASE+RA*8]
     |  sar RB, 47
-    |  add PC, 4
+    |  add PC, 8
     |  cmp RBd, RDd
     if (!LJ_HASFFI) goto iseqne_test;
     if (vk) {
       |  jne >3
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  branchPC RD
       |2:
       |  ins_next
@@ -3114,7 +3117,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     } else {
       |  je >2
       |  cmp RBd, LJ_TCDATA; je ->vmeta_equal_cd
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  branchPC RD
       |2:
       |  ins_next
@@ -3126,7 +3129,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_ISTC: case BC_ISFC: case BC_IST: case BC_ISF:
     |  ins_AD	// RA = dst or unused, RD = src, JMP with RD = target
     |  mov ITYPE, [BASE+RD*8]
-    |  add PC, 4
+    |  add PC, 8
     if (op == BC_ISTC || op == BC_ISFC) {
       |  mov RB, ITYPE
     }
@@ -3140,7 +3143,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     if (op == BC_ISTC || op == BC_ISFC) {
       |  mov [BASE+RA*8], RB
     }
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  branchPC RD
     |1:					// Fallthrough to the next instruction.
     |  ins_next
@@ -3618,7 +3621,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |5:
     |  mov L:CARG1, L:RB
     |  call extern lj_gc_step_fixtop	// (lua_State *L)
-    |  movzx RDd, PC_RD
+    |  mov RDd, PC_RD
     |  jmp <1
     break;
   case BC_TDUP:
@@ -3642,8 +3645,9 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |3:
     |  mov L:CARG1, L:RB
     |  call extern lj_gc_step_fixtop	// (lua_State *L)
-    |  movzx RDd, PC_RD			// Need to reload RD.
-    |  not RD
+    |  mov RDd, PC_RD			// Need to reload RD.
+    |  not RDd
+    |  movsxd RD, RDd
     |  jmp <2
     break;
 
@@ -3710,7 +3714,8 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_TGETS:
     |  ins_ABC	// RA = dst, RB = table, RC = str const (~)
     |  mov TAB:RB, [BASE+RB*8]
-    |  not RC
+    |  not RCd
+    |  movsxd RC, RCd
     |  mov STR:RC, [KBASE+RC*8]
     |  checktab TAB:RB, ->vmeta_tgets
     |->BC_TGETS_Z:	// RB = GCtab *, RC = GCstr *
@@ -3842,7 +3847,8 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_TSETS:
     |  ins_ABC	// RA = src, RB = table, RC = str const (~)
     |  mov TAB:RB, [BASE+RB*8]
-    |  not RC
+    |  not RCd
+    |  movsxd RC, RCd
     |  mov STR:RC, [KBASE+RC*8]
     |  checktab TAB:RB, ->vmeta_tsets
     |->BC_TSETS_Z:	// RB = GCtab *, RC = GCstr *
@@ -4001,7 +4007,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  call extern lj_tab_reasize	// (lua_State *L, GCtab *t, int nasize)
     |  mov BASE, L:RB->base
     |  movzx RAd, PC_RA			// Restore RA.
-    |  movzx RDd, PC_RD			// Restore RD.
+    |  mov RDd, PC_RD			// Restore RD.
     |  jmp <1				// Retry.
     |
     |7:  // Possible table write barrier for any value. Skip valiswhite check.
@@ -4108,7 +4114,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  cleartp TAB:RB
     |  mov RCd, [BASE+RA*8-8]		// Get index from control var.
     |  mov TMPRd, TAB:RB->asize
-    |  add PC, 4
+    |  add PC, 8
     |  mov ITYPE, TAB:RB->array
     |1:  // Traverse array part.
     |  cmp RCd, TMPRd; jae >5		// Index points after array part?
@@ -4129,7 +4135,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  add RCd, 1
     |  mov [BASE+RA*8-8], RCd		// Update control var.
     |2:
-    |  movzx RDd, PC_RD			// Get target from ITERL.
+    |  mov RDd, PC_RD			// Get target from ITERL.
     |  branchPC RD
     |3:
     |  ins_next
@@ -4175,19 +4181,19 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  mov PC_OP, BC_JMP
     |  branchPC RD
     |.if JIT
-    |  cmp byte [PC], BC_ITERN
-    |  jne >6
-    |.endif
-    |  mov byte [PC], BC_ITERC
+|  cmp word [PC], BC_ITERN
+|  jne >6
+|.endif
+|  mov word [PC], BC_ITERC
     |  jmp <1
     |.if JIT
-    |6:  // Unpatch JLOOP.
-    |  mov RA, [DISPATCH+DISPATCH_J(trace)]
-    |  movzx RCd, word [PC+2]
-    |  mov TRACE:RA, [RA+RC*8]
-    |  mov eax, TRACE:RA->startins
-    |  mov al, BC_ITERC
-    |  mov dword [PC], eax
+|6:  // Unpatch JLOOP.
+|  mov RA, [DISPATCH+DISPATCH_J(trace)]
+|  movzx RCd, word [PC+2]
+|  mov TRACE:RA, [RA+RC*8]
+|  mov RC, TRACE:RA->startins		// Load full 64-bit startins into RC(rax)
+|  mov ax, BC_ITERC			// Replace OP field (low 16 bits) with BC_ITERC
+|  mov qword [PC], RC			// Write full 64-bit instruction to bytecode
     |  jmp <1
     |.endif
     break;
@@ -4302,7 +4308,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       /* fallthrough */
     case BC_RET0:
       |5:
-      |  cmp PC_RB, RDL			// More results expected?
+      |  cmp PC_RB, RDW			// More results expected?
       |  ja >6
     default:
       break;
@@ -4392,7 +4398,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 	|  branchPC RD
       } else if (op == BC_JFORI) {
 	|  branchPC RD
-	|  movzx RDd, PC_RD
+	|  mov RDd, PC_RD
 	|  jle =>BC_JLOOP
 	|1:
 	|6:
@@ -4424,7 +4430,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 	|  jge <7
       } else if (op == BC_JFORI) {
 	|  branchPC RD
-	|  movzx RDd, PC_RD
+	|  mov RDd, PC_RD
 	|  jge =>BC_JLOOP
       } else if (op == BC_IFORL) {
 	|  jl <7
@@ -4472,7 +4478,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       |.endif
     } else if (op == BC_JFORI) {
       |  branchPC RD
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  jnb =>BC_JLOOP
     } else if (op == BC_IFORL) {
       |.if DUALNUM
@@ -4616,17 +4622,17 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 #endif
   case BC_IFUNCF:
     |  ins_AD  // BASE = new base, RA = framesize, RD = nargs+1
-    |  mov KBASE, [PC-4+PC2PROTO(k)]
+    |  mov KBASE, [PC-8+PC2PROTO(k)]
     |  mov L:RB, SAVE_L
     |  lea RA, [BASE+RA*8]		// Top of frame.
     |  cmp RA, L:RB->maxstack
     |  ja ->vm_growstack_f
-    |  movzx RAd, byte [PC-4+PC2PROTO(numparams)]
+    |  movzx RAd, word [PC-8+PC2PROTO(numparams)]
     |  cmp NARGS:RDd, RAd		// Check for missing parameters.
     |  jbe >3
     |2:
     if (op == BC_JFUNCF) {
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  jmp =>BC_JLOOP
     } else {
       |  ins_next
@@ -4660,7 +4666,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ja ->vm_growstack_v		// Need to grow stack.
     |  mov RA, BASE
     |  mov BASE, RD
-    |  movzx RBd, byte [PC-4+PC2PROTO(numparams)]
+    |  movzx RBd, word [PC-8+PC2PROTO(numparams)]
     |  test RBd, RBd
     |  jz >2
     |  add RA, 8
@@ -4676,10 +4682,10 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  jnz <1
     |2:
     if (op == BC_JFUNCV) {
-      |  movzx RDd, PC_RD
+      |  mov RDd, PC_RD
       |  jmp =>BC_JLOOP
     } else {
-      |  mov KBASE, [PC-4+PC2PROTO(k)]
+      |  mov KBASE, [PC-8+PC2PROTO(k)]
       |  ins_next
     }
     |

@@ -10,7 +10,7 @@
 #include "buildvm_libbc.h"
 
 /* Context for library definitions. */
-static uint8_t obuf[8192];
+static uint8_t obuf[32768];
 static uint8_t *optr;
 static char modname[80];
 static size_t modnamelen;
@@ -153,7 +153,7 @@ static void libdef_func(BuildCtx *ctx, char *p, int arg)
   regfunc = REGFUNC_OK;
 }
 
-static uint8_t *libdef_uleb128(uint8_t *p, uint32_t *vv)
+static const uint8_t *libdef_uleb128(const uint8_t *p, uint32_t *vv)
 {
   uint32_t v = *p++;
   if (v >= 0x80) {
@@ -164,26 +164,91 @@ static uint8_t *libdef_uleb128(uint8_t *p, uint32_t *vv)
   return p;
 }
 
-static void libdef_fixupbc(uint8_t *p)
+/* Convert 32-bit libbc_code block to 64-bit BCIns format and write to optr.
+** Returns number of bytes written (or 0 on failure). */
+static int libdef_convert_bc(const uint8_t *src, int srclen)
 {
-  uint32_t i, sizebc;
-  p += 4;
-  p = libdef_uleb128(p, &sizebc);
-  p = libdef_uleb128(p, &sizebc);
-  p = libdef_uleb128(p, &sizebc);
+  /* Parse proto header: flags, numparams, framesize, sizeuv (4 bytes) */
+  /* then uleb128 sizekgc, sizekn, sizebc */
+  const uint8_t *p = src;
+  const uint8_t *end = src + srclen;
+  uint32_t sizekgc, sizekn, sizebc, i;
+  uint8_t *dst_start = optr;
+
+  if (p + 4 > end) return 0;
+  /* Copy the 4 header bytes as-is */
+  *optr++ = *p++; /* flags */
+  *optr++ = *p++; /* numparams */
+  *optr++ = *p++; /* framesize */
+  *optr++ = *p++; /* sizeuv */
+
+  /* Copy uleb128 sizekgc */
+  { const uint8_t *tmp = p; p = libdef_uleb128(p, &sizekgc);
+    while (tmp < p) *optr++ = *tmp++; }
+  /* Copy uleb128 sizekn */
+  { const uint8_t *tmp = p; p = libdef_uleb128(p, &sizekn);
+    while (tmp < p) *optr++ = *tmp++; }
+  /* Copy uleb128 sizebc (value sizebc-1 is stored) */
+  { const uint8_t *tmp = p; p = libdef_uleb128(p, &sizebc);
+    while (tmp < p) *optr++ = *tmp++; }
+  /* sizebc here = sizebc-1 (FUNC header is NOT stored in libbc_code) */
+  /* bcread_bytecode reads (sizebc-1) instructions into bc+1, skipping bc[0] */
+
+  /* Convert each 4-byte BCIns to 8-byte BCIns */
   for (i = 0; i < sizebc; i++, p += 4) {
-    uint8_t op = p[libbc_endian ? 3 : 0];
-    uint8_t ra = p[libbc_endian ? 2 : 1];
-    uint8_t rc = p[libbc_endian ? 1 : 2];
-    uint8_t rb = p[libbc_endian ? 0 : 3];
-    if (!LJ_DUALNUM && op == BC_ISTYPE && rc == ~LJ_TNUMX+1) {
+    uint8_t op8 = p[libbc_endian ? 3 : 0];
+    uint8_t ra8 = p[libbc_endian ? 2 : 1];
+    uint8_t rc8 = p[libbc_endian ? 1 : 2];
+    uint8_t rb8 = p[libbc_endian ? 0 : 3];
+    uint16_t op = op8, ra = ra8, rc = rc8, rb = rb8;
+    uint32_t d = (uint32_t)rc8 | ((uint32_t)rb8 << 8);  /* old 16-bit D */
+    /* Fix up ISTYPE -> ISNUM if !LJ_DUALNUM */
+    if (!LJ_DUALNUM && op == BC_ISTYPE && rc8 == (uint8_t)(~LJ_TNUMX+1)) {
       op = BC_ISNUM; rc++;
     }
-    p[LJ_ENDIAN_SELECT(0, 3)] = op;
-    p[LJ_ENDIAN_SELECT(1, 2)] = ra;
-    p[LJ_ENDIAN_SELECT(2, 1)] = rc;
-    p[LJ_ENDIAN_SELECT(3, 0)] = rb;
+    /* Fix up jump offsets: old BCBIAS_J=0x8000, new BCBIAS_J=0x80000000 */
+    /* Check if D mode is BCMjump by scanning the BCDEF table */
+    {
+      /* Opcodes with BCMjump in D/C field (from lj_bc.h BCDEF):
+      ** BC_UCLO, BC_ISNEXT, BC_JMP, BC_FORI, BC_JFORI,
+      ** BC_FORL, BC_IFORL, BC_ITERL, BC_IITERL, BC_LOOP, BC_ILOOP */
+      static const uint8_t jump_ops[] = {
+        BC_UCLO, BC_ISNEXT, BC_JMP,
+        BC_FORI, BC_JFORI,
+        BC_FORL, BC_IFORL,
+        BC_ITERL, BC_IITERL,
+        BC_LOOP, BC_ILOOP,
+        0xff
+      };
+      int is_jump = 0;
+      const uint8_t *jop = jump_ops;
+      while (*jop != 0xff) { if (*jop++ == op8) { is_jump = 1; break; } }
+      if (is_jump) {
+        /* old signed jump: (d - 0x8000) -> new D: signed_offset + 0x80000000 */
+        int32_t jofs = (int32_t)d - 0x8000;
+        d = (uint32_t)(jofs + (int32_t)0x80000000u);
+        rc = (uint16_t)(d & 0xffff);
+        rb = (uint16_t)(d >> 16);
+      }
+    }
+    /* Write 8-byte instruction: OP(16) | A(16) | C(16) | B(16) LE */
+    *(uint16_t *)(optr + LJ_ENDIAN_SELECT(0, 6)) = op;
+    *(uint16_t *)(optr + LJ_ENDIAN_SELECT(2, 4)) = ra;
+    *(uint16_t *)(optr + LJ_ENDIAN_SELECT(4, 2)) = rc;
+    *(uint16_t *)(optr + LJ_ENDIAN_SELECT(6, 0)) = rb;
+    /* High 32-bit is D field */
+    *(uint32_t *)(optr + LJ_ENDIAN_SELECT(4, 0)) = d;
+    optr += 8;
   }
+
+  /* Copy remaining data (kgc strings, knum constants etc.) */
+  /* For stripped bytecode (BCDUMP_F_STRIP), there's no debug info */
+  /* kgc: sizekgc entries, each is a type byte + data */
+  /* knum: sizekn entries, each is uleb128_33 + optional uleb128 */
+  /* We just copy the rest verbatim since it doesn't contain BCIns */
+  while (p < end) *optr++ = *p++;
+
+  return (int)(optr - dst_start);
 }
 
 static void libdef_lua(BuildCtx *ctx, char *p, int arg)
@@ -198,9 +263,8 @@ static void libdef_lua(BuildCtx *ctx, char *p, int arg)
 	obuf[2]++;  /* Bump hash table size. */
 	*optr++ = LIBINIT_LUA;
 	libdef_name(p, 0);
-	memcpy(optr, libbc_code + ofs, len);
-	libdef_fixupbc(optr);
-	optr += len;
+	/* Convert 32-bit libbc bytecode to 64-bit format in place */
+	libdef_convert_bc(libbc_code + ofs, len);
 	return;
       }
     }

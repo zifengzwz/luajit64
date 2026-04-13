@@ -148,7 +148,7 @@ typedef struct GCRef {
 /* -- Common type definitions --------------------------------------------- */
 
 /* Types for handling bytecodes. Need this here, details in lj_bc.h. */
-typedef uint32_t BCIns;  /* Bytecode instruction. */
+typedef uint64_t BCIns;  /* Bytecode instruction. */
 typedef uint32_t BCPos;  /* Bytecode position. */
 typedef uint32_t BCReg;  /* Bytecode register. */
 typedef int32_t BCLine;  /* Bytecode line number. */
@@ -371,8 +371,8 @@ typedef struct GCcdataVar {
 
 typedef struct GCproto {
   GCHeader;
-  uint8_t numparams;	/* Number of parameters. */
-  uint8_t framesize;	/* Fixed frame size. */
+  uint16_t numparams;	/* Number of parameters. */
+  uint16_t framesize;	/* Fixed frame size. */
   MSize sizebc;		/* Number of bytecode instructions. */
 #if LJ_GC64
   uint32_t unused_gc64;
@@ -383,7 +383,7 @@ typedef struct GCproto {
   MSize sizekgc;	/* Number of collectable constants. */
   MSize sizekn;		/* Number of lua_Number constants. */
   MSize sizept;		/* Total size including colocated arrays. */
-  uint8_t sizeuv;	/* Number of upvalues. */
+  uint16_t sizeuv;	/* Number of upvalues. */
   uint8_t flags;	/* Miscellaneous flags (see below). */
   uint16_t trace;	/* Anchor for chain of root traces. */
   /* ------ The following fields are for debugging/tracebacks only ------ */
