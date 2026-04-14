@@ -16,7 +16,7 @@
 ** header = ESC 'L' 'J' versionB flagsU [namelenU nameB*]
 ** proto  = lengthU pdata
 ** pdata  = phead bcinsW* uvdataH* kgc* knum* [debugB*]
-** phead  = flagsB numparamsB framesizeB numuvB numkgcU numknU numbcU
+** phead  = flagsB numparamsH framesizeH numuvH numkgcU numknU numbcU
 **          [debuglenU [firstlineU numlineU]]
 ** kgc    = kgctypeU { ktab | (loU hiU) | (rloU rhiU iloU ihiU) | strB* }
 ** knum   = intU0 | (loU1 hiU)
@@ -36,7 +36,8 @@
 /* If you perform *any* kind of private modifications to the bytecode itself
 ** or to the dump format, you *must* set BCDUMP_VERSION to 0x80 or higher.
 */
-#define BCDUMP_VERSION		2
+/* Modified: numparams, framesize, sizeuv now use ULEB128 encoding (was single byte) */
+#define BCDUMP_VERSION		0x83
 
 /* Compatibility flags. */
 #define BCDUMP_F_BE		0x01

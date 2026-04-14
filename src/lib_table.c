@@ -105,29 +105,41 @@ LJLIB_CF(table_insert)		LJLIB_REC(.)
   return 0;
 }
 
-LJLIB_LUA(table_remove) /*
-  function(t, pos)
-    CHECK_tab(t)
-    local len = #t
-    if pos == nil then
-      if len ~= 0 then
-	local old = t[len]
-	t[len] = nil
-	return old
-      end
-    else
-      CHECK_int(pos)
-      if pos >= 1 and pos <= len then
-	local old = t[pos]
-	for i=pos+1,len do
-	  t[i-1] = t[i]
-	end
-	t[len] = nil
-	return old
-      end
-    end
-  end
-*/
+LJLIB_CF(table_remove)
+{
+  GCtab *t = lj_lib_checktab(L, 1);
+  int32_t len = (int32_t)lj_tab_len(t);
+  int32_t pos;
+  if (L->base+1 >= L->top || tvisnil(L->base+1)) {
+    /* No pos argument: remove last element */
+    pos = len;
+  } else {
+    pos = lj_lib_checkint(L, 2);
+  }
+  if (pos >= 1 && pos <= len) {
+    cTValue *src = lj_tab_getint(t, pos);
+    if (src) {
+      copyTV(L, L->top, src);
+    } else {
+      setnilV(L->top);
+    }
+    L->top++;
+    /* Shift elements down */
+    for (; pos < len; pos++) {
+      TValue *dst = lj_tab_setint(L, t, pos);
+      src = lj_tab_getint(t, pos + 1);
+      if (src) {
+        copyTV(L, dst, src);
+      } else {
+        setnilV(dst);
+      }
+    }
+    /* Clear the last element */
+    setnilV(lj_tab_setint(L, t, len));
+    return 1;
+  }
+  return 0;
+}
 
 LJLIB_LUA(table_move) /*
   function(a1, f, e, t, a2)

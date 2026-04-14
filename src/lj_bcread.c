@@ -322,9 +322,9 @@ GCproto *lj_bcread_proto(LexState *ls)
 
   /* Read prototype header. */
   flags = bcread_byte(ls);
-  numparams = bcread_byte(ls);
-  framesize = bcread_byte(ls);
-  sizeuv = bcread_byte(ls);
+  numparams = bcread_uleb128(ls);
+  framesize = bcread_uleb128(ls);
+  sizeuv = bcread_uleb128(ls);
   sizekgc = bcread_uleb128(ls);
   sizekn = bcread_uleb128(ls);
   sizebc = bcread_uleb128(ls) + 1;
@@ -348,15 +348,15 @@ GCproto *lj_bcread_proto(LexState *ls)
   /* Allocate prototype object and initialize its fields. */
   pt = (GCproto *)lj_mem_newgco(ls->L, (MSize)sizept);
   pt->gct = ~LJ_TPROTO;
-  pt->numparams = (uint8_t)numparams;
-  pt->framesize = (uint8_t)framesize;
+  pt->numparams = (uint16_t)numparams;
+  pt->framesize = (uint16_t)framesize;
   pt->sizebc = sizebc;
   setmref(pt->k, (char *)pt + ofsk);
   setmref(pt->uv, (char *)pt + ofsuv);
   pt->sizekgc = 0;  /* Set to zero until fully initialized. */
   pt->sizekn = sizekn;
   pt->sizept = sizept;
-  pt->sizeuv = (uint8_t)sizeuv;
+  pt->sizeuv = (uint16_t)sizeuv;
   pt->flags = (uint8_t)flags;
   pt->trace = 0;
   setgcref(pt->chunkname, obj2gco(ls->chunkname));

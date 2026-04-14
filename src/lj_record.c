@@ -2571,6 +2571,10 @@ void lj_record_ins(jit_State *J)
   /* -- Calls and vararg handling ----------------------------------------- */
 
   case BC_ITERC:
+#if LJ_GC64
+    /* GC64 fix: Force interpreter fallback for ITERC to avoid stack issues */
+    lj_trace_err(J, LJ_TRERR_NYIBC);
+#else
     J->base[ra] = getslot(J, ra-3);
     J->base[ra+1+LJ_FR2] = getslot(J, ra-2);
     J->base[ra+2+LJ_FR2] = getslot(J, ra-1);
@@ -2581,6 +2585,7 @@ void lj_record_ins(jit_State *J)
       copyTV(J->L, b+2+LJ_FR2, b-1);
     }
     lj_record_call(J, ra, (ptrdiff_t)rc-1);
+#endif
     break;
 
   /* L->top is set to L->base+ra+rc+NARGS-1+1. See lj_dispatch_ins(). */
@@ -2636,7 +2641,12 @@ void lj_record_ins(jit_State *J)
     rec_loop_interp(J, pc, rec_iterl(J, *pc));
     break;
   case BC_ITERN:
+#if LJ_GC64
+    /* GC64 fix: Force interpreter fallback for ITERN to avoid stack issues */
+    lj_trace_err(J, LJ_TRERR_NYIBC);
+#else
     rec_loop_interp(J, pc, rec_itern(J, ra, rb));
+#endif
     break;
   case BC_LOOP:
     rec_loop_interp(J, pc, rec_loop(J, ra, 1));
