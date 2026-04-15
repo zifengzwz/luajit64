@@ -422,7 +422,7 @@ static void trace_start(jit_State *J)
       lj_assertJ(bc_op(*J->pc) == BC_FORL || bc_op(*J->pc) == BC_ITERL ||
 		 bc_op(*J->pc) == BC_LOOP || bc_op(*J->pc) == BC_FUNCF,
 		 "bad hot bytecode %d", bc_op(*J->pc));
-      setbc_op(J->pc, (int)bc_op(*J->pc)+(int)BC_ILOOP-(int)BC_LOOP);
+      setbc_op((BCIns *)J->pc, (int)bc_op(*J->pc)+(int)BC_ILOOP-(int)BC_LOOP);
       J->pt->flags |= PROTO_ILOOP;
     }
     J->state = LJ_TRACE_IDLE;  /* Silently ignored. */

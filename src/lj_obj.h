@@ -148,7 +148,7 @@ typedef struct GCRef {
 /* -- Common type definitions --------------------------------------------- */
 
 /* Types for handling bytecodes. Need this here, details in lj_bc.h. */
-typedef uint32_t BCIns;  /* Bytecode instruction. */
+typedef uint64_t BCIns;  /* Bytecode instruction. */
 typedef uint32_t BCPos;  /* Bytecode position. */
 typedef uint32_t BCReg;  /* Bytecode register. */
 typedef int32_t BCLine;  /* Bytecode line number. */

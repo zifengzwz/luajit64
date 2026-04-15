@@ -279,20 +279,41 @@ static void bcread_knum(LexState *ls, GCproto *pt, MSize sizekn)
   }
 }
 
-/* Read bytecode instructions. */
+/* Convert a 32-bit bytecode instruction to 64-bit format.
+** Old 32-bit layout (MSB→LSB): B(8)|C(8)|A(8)|OP(8)
+** New 64-bit layout (MSB→LSB): B(16)|C(16)|A(16)|pad(8)|OP(8)
+** Old AD layout: D(16)|A(8)|OP(8)
+** New AD layout: D(32)|A(16)|pad(8)|OP(8)
+*/
+static LJ_AINLINE BCIns bcins_32to64(uint32_t ins32)
+{
+  uint32_t op32 = ins32 & 0xff;
+  uint32_t a32 = (ins32 >> 8) & 0xff;
+  uint32_t c32 = (ins32 >> 16) & 0xff;
+  uint32_t b32 = (ins32 >> 24) & 0xff;
+  /* Reconstruct in 64-bit format: OP at bits[7:0], pad=0 at bits[15:8],
+  ** A at bits[31:16], C at bits[47:32], B at bits[63:48]. */
+  return ((BCIns)op32) | ((BCIns)a32 << 16) |
+	 ((BCIns)c32 << 32) | ((BCIns)b32 << 48);
+}
+
+/* Read bytecode instructions (from 32-bit serialized format into 64-bit). */
 static void bcread_bytecode(LexState *ls, GCproto *pt, MSize sizebc)
 {
   BCIns *bc = proto_bc(pt);
   BCIns op;
+  MSize i;
   if (ls->fr2 != LJ_FR2) op = BC_NOT;  /* Mark non-native prototype. */
   else if ((pt->flags & PROTO_VARARG)) op = BC_FUNCV;
   else op = BC_FUNCF;
   bc[0] = BCINS_AD(op, pt->framesize, 0);
-  bcread_block(ls, bc+1, (sizebc-1)*(MSize)sizeof(BCIns));
-  /* Swap bytecode instructions if the endianess differs. */
-  if (bcread_swap(ls)) {
-    MSize i;
-    for (i = 1; i < sizebc; i++) bc[i] = lj_bswap(bc[i]);
+  /* Read 32-bit instructions and convert to 64-bit format. */
+  for (i = 1; i < sizebc; i++) {
+    uint32_t ins32;
+    bcread_block(ls, &ins32, 4);
+    if (bcread_swap(ls))
+      ins32 = lj_bswap(ins32);
+    bc[i] = bcins_32to64(ins32);
   }
 }
 

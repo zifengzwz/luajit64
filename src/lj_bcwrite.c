@@ -289,32 +289,46 @@ static void bcwrite_knum(BCWriteCtx *ctx, GCproto *pt)
   ctx->sb.w = p;
 }
 
-/* Write bytecode instructions. */
+/* Convert a 64-bit bytecode instruction back to 32-bit serialized format.
+** 64-bit layout (MSB→LSB): B(16)|C(16)|A(16)|pad(8)|OP(8)
+** 32-bit layout (MSB→LSB): B(8)|C(8)|A(8)|OP(8)
+*/
+static LJ_AINLINE uint32_t bcins_64to32(BCIns ins64)
+{
+  uint32_t op64 = (uint32_t)(ins64 & 0xff);
+  uint32_t a64 = (uint32_t)((ins64 >> 16) & 0xffff);
+  uint32_t c64 = (uint32_t)((ins64 >> 32) & 0xffff);
+  uint32_t b64 = (uint32_t)(ins64 >> 48);
+  return op64 | (a64 << 8) | (c64 << 16) | (b64 << 24);
+}
+
+/* Write bytecode instructions (convert 64-bit back to 32-bit for serialization). */
 static char *bcwrite_bytecode(BCWriteCtx *ctx, char *p, GCproto *pt)
 {
   MSize nbc = pt->sizebc-1;  /* Omit the [JI]FUNC* header. */
-#if LJ_HASJIT
-  uint8_t *q = (uint8_t *)p;
-#endif
-  p = lj_buf_wmem(p, proto_bc(pt)+1, nbc*(MSize)sizeof(BCIns));
+  BCIns *bc = proto_bc(pt)+1;
+  MSize i;
   UNUSED(ctx);
 #if LJ_HASJIT
   /* Unpatch modified bytecode containing ILOOP/JLOOP etc. */
   if ((pt->flags & PROTO_ILOOP) || pt->trace) {
     jit_State *J = L2J(sbufL(&ctx->sb));
-    MSize i;
-    for (i = 0; i < nbc; i++, q += sizeof(BCIns)) {
-      BCOp op = (BCOp)q[LJ_ENDIAN_SELECT(0, 3)];
+    for (i = 0; i < nbc; i++) {
+      BCOp op = bc_op(bc[i]);
       if (op == BC_IFORL || op == BC_IITERL || op == BC_ILOOP ||
 	  op == BC_JFORI) {
-	q[LJ_ENDIAN_SELECT(0, 3)] = (uint8_t)(op-BC_IFORL+BC_FORL);
+	setbc_op(&bc[i], (uint8_t)(op-BC_IFORL+BC_FORL));
       } else if (op == BC_JFORL || op == BC_JITERL || op == BC_JLOOP) {
-	BCReg rd = q[LJ_ENDIAN_SELECT(2, 1)] + (q[LJ_ENDIAN_SELECT(3, 0)] << 8);
-	memcpy(q, &traceref(J, rd)->startins, 4);
+	bc[i] = traceref(J, bc_d(bc[i]))->startins;
       }
     }
   }
 #endif
+  for (i = 0; i < nbc; i++) {
+    uint32_t ins32 = bcins_64to32(bc[i]);
+    memcpy(p, &ins32, 4);
+    p += 4;
+  }
   return p;
 }
 
@@ -337,7 +351,7 @@ static void bcwrite_proto(BCWriteCtx *ctx, GCproto *pt)
 
   /* Start writing the prototype info to a buffer. */
   p = lj_buf_need(&ctx->sb,
-		  5+4+6*5+(pt->sizebc-1)*(MSize)sizeof(BCIns)+pt->sizeuv*2);
+		  5+4+6*5+(pt->sizebc-1)*(MSize)4+pt->sizeuv*2);
   p += 5;  /* Leave room for final size. */
 
   /* Write prototype header. */

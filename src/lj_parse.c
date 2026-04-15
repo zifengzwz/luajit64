@@ -181,7 +181,7 @@ LJ_NORET LJ_NOINLINE static void err_token(LexState *ls, LexToken tok)
   lj_lex_error(ls, ls->tok, LJ_ERR_XTOKEN, lj_lex_token2str(ls, tok));
 }
 
-LJ_NORET static void err_limit(FuncState *fs, uint32_t limit, const char *what)
+LJ_NORET static void err_limit(FuncState *fs, uint64_t limit, const char *what)
 {
   if (fs->linedefined == 0)
     lj_lex_error(fs->ls, 0, LJ_ERR_XLIMM, limit, what);
