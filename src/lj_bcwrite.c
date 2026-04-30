@@ -304,13 +304,15 @@ static char *bcwrite_bytecode(BCWriteCtx *ctx, char *p, GCproto *pt)
     jit_State *J = L2J(sbufL(&ctx->sb));
     MSize i;
     for (i = 0; i < nbc; i++, q += sizeof(BCIns)) {
-      BCOp op = (BCOp)q[LJ_ENDIAN_SELECT(0, 3)];
+      BCOp op = (BCOp)q[0];  /* OP is byte 0 of the 64-bit BCIns. */
       if (op == BC_IFORL || op == BC_IITERL || op == BC_ILOOP ||
 	  op == BC_JFORI) {
-	q[LJ_ENDIAN_SELECT(0, 3)] = (uint8_t)(op-BC_IFORL+BC_FORL);
+	q[0] = (uint8_t)(op-BC_IFORL+BC_FORL);
       } else if (op == BC_JFORL || op == BC_JITERL || op == BC_JLOOP) {
-	BCReg rd = q[LJ_ENDIAN_SELECT(2, 1)] + (q[LJ_ENDIAN_SELECT(3, 0)] << 8);
-	memcpy(q, &traceref(J, rd)->startins, 4);
+	/* 32-bit D is stored in bytes 4..7 of the 64-bit BCIns. */
+	BCReg rd = (BCReg)q[4] | ((BCReg)q[5] << 8) |
+		   ((BCReg)q[6] << 16) | ((BCReg)q[7] << 24);
+	memcpy(q, &traceref(J, rd)->startins, sizeof(BCIns));
       }
     }
   }

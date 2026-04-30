@@ -2,6 +2,34 @@
 
 openresty/luajit2 - OpenResty's maintained branch of LuaJIT.
 
+> **Fork notice — 64-bit bytecode**
+>
+> This branch widens LuaJIT's bytecode instruction (`BCIns`) from 32 bits
+> to 64 bits. The new field layout is:
+>
+> ```
+> ABC form: | B (16) | C (16) | A (16) | pad (8) | OP (8) |   (MSB->LSB)
+> AD  form: |       D (32)   | A (16) | pad (8) | OP (8) |
+> ```
+>
+> Operand ranges become `BCMAX_A/B/C = 0xFFFF` (was `0xFF`),
+> `BCMAX_D = 0xFFFFFFFF` (was `0xFFFF`), and `BCBIAS_J = 0x80000000`
+> (was `0x8000`). The on-disk dump format bumps to
+> `BCDUMP_VERSION = 3` and stores 8 bytes per instruction; old `.luac`
+> files are **not** loadable by this build.
+>
+> Only the **x64 interpreter** (`src/vm_x64.dasc`) has been adapted. The
+> JIT compiler has not been retargeted, so JIT must be disabled
+> (`luajit64 -joff ...` or `jit.off(true, true)` from Lua). Building on
+> Windows uses `src\msvcbuild.bat static` under the VS2022 x64 toolchain,
+> which produces a single fully-static `src\luajit64.exe` (no
+> `lua51.dll` runtime dependency, only `KERNEL32.dll`). The regression
+> suite for the 64-bit format lives under `test/`; run
+> `test\run_bc64_tests.bat` and see `test\BC64_RESULT.md`.
+>
+> See `openspec/changes/bytecode-64bit-expansion/` for the design and
+> task tracker driving this work.
+
 Table of Contents
 =================
 

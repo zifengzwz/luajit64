@@ -1361,8 +1361,10 @@ static void fs_fixup_k(FuncState *fs, GCproto *pt, void *kptr)
   TValue *array;
   Node *node;
   MSize i, hmask;
-  checklimitgt(fs, fs->nkn, BCMAX_D+1, "constants");
-  checklimitgt(fs, fs->nkgc, BCMAX_D+1, "constants");
+  /* NB: BCMAX_D is now 0xFFFFFFFF, so BCMAX_D+1 would overflow to 0.
+  ** Use BCMAX_D directly (lose at most 1 slot at the absolute max). */
+  checklimitgt(fs, fs->nkn, BCMAX_D, "constants");
+  checklimitgt(fs, fs->nkgc, BCMAX_D, "constants");
   setmref(pt->k, kptr);
   pt->sizekn = fs->nkn;
   pt->sizekgc = fs->nkgc;

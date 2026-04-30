@@ -6,6 +6,7 @@
 #include "buildvm.h"
 #include "lj_obj.h"
 #include "lj_bc.h"
+#include "lj_bcdump.h"
 #include "lj_lib.h"
 #include "buildvm_libbc.h"
 
@@ -164,26 +165,174 @@ static uint8_t *libdef_uleb128(uint8_t *p, uint32_t *vv)
   return p;
 }
 
-static void libdef_fixupbc(uint8_t *p)
+/*
+** Convert one 32-bit (legacy) bytecode dump segment into the new 64-bit
+** layout used by the runtime, writing the result starting at `dst` and
+** returning the total number of bytes written.
+**
+** Source layout (per instruction, 4 bytes, little-endian):
+**   byte0 = OP, byte1 = A, byte2 = C, byte3 = B    (ABC form)
+**   byte0 = OP, byte1 = A, byte2 = D_lo, byte3 = D_hi  (AD form)
+**
+** Destination layout (per instruction, 8 bytes, little-endian):
+**   bytes 0..1 : OP (8b) + pad (8b)
+**   bytes 2..3 : A   (16b)
+**   bytes 4..5 : C / D_lo (16b)
+**   bytes 6..7 : B / D_hi (16b)
+**
+** For AD form (KSHORT/JMP/...), the legacy 16-bit D is stored as a
+** signed 16-bit value relative to BCBIAS_J=0x8000. The new layout uses
+** 32-bit D relative to BCBIAS_J=0x80000000. To preserve semantics:
+**   D_new = (int32_t)(int16_t)D_old + 0x80000000 - 0x8000
+** i.e. unbias against the old bias and re-bias against the new bias.
+*/
+
+/* Build a local "is AD-form" table from BCDEF, using the convention that
+** AD-form opcodes are exactly those whose B-field operand mode (mb) is
+** `___` (i.e. unused). This matches lj_bc.h's BCMnone in that slot.
+**
+** For AD-form opcodes we *also* need to know whether the D field is a
+** jump offset, because only then is the on-disk value biased by
+** BCBIAS_J and must be re-biased when widening from 16 to 32 bits. The
+** companion table libdef_isjump records that.
+*/
+#define LIBDEF_BCMODE_AD____   1   /* mb == ___ -> AD form */
+#define LIBDEF_BCMODE_AD_dst   0
+#define LIBDEF_BCMODE_AD_base  0
+#define LIBDEF_BCMODE_AD_var   0
+#define LIBDEF_BCMODE_AD_rbase 0
+#define LIBDEF_BCMODE_AD_uv    0
+#define LIBDEF_BCMODE_AD_lit   0
+#define LIBDEF_BCMODE_AD_lits  0
+#define LIBDEF_BCMODE_AD_pri   0
+#define LIBDEF_BCMODE_AD_num   0
+#define LIBDEF_BCMODE_AD_str   0
+#define LIBDEF_BCMODE_AD_tab   0
+#define LIBDEF_BCMODE_AD_func  0
+#define LIBDEF_BCMODE_AD_jump  0
+#define LIBDEF_BCMODE_AD_cdata 0
+
+static const uint8_t libdef_isad[] = {
+#define BCISAD(name, ma, mb, mc, mt)  LIBDEF_BCMODE_AD_##mb,
+  BCDEF(BCISAD)
+#undef BCISAD
+  0
+};
+
+/* Whether the D field (mc when mb==___) is a jump offset. Only true for
+** opcodes whose mc == jump. We re-use the same infrastructure: define
+** _jump = 1 and everything else = 0 for the C-field slot.
+*/
+#define LIBDEF_BCMC_JUMP____   0
+#define LIBDEF_BCMC_JUMP_dst   0
+#define LIBDEF_BCMC_JUMP_base  0
+#define LIBDEF_BCMC_JUMP_var   0
+#define LIBDEF_BCMC_JUMP_rbase 0
+#define LIBDEF_BCMC_JUMP_uv    0
+#define LIBDEF_BCMC_JUMP_lit   0
+#define LIBDEF_BCMC_JUMP_lits  0
+#define LIBDEF_BCMC_JUMP_pri   0
+#define LIBDEF_BCMC_JUMP_num   0
+#define LIBDEF_BCMC_JUMP_str   0
+#define LIBDEF_BCMC_JUMP_tab   0
+#define LIBDEF_BCMC_JUMP_func  0
+#define LIBDEF_BCMC_JUMP_jump  1
+#define LIBDEF_BCMC_JUMP_cdata 0
+
+static const uint8_t libdef_isjump[] = {
+#define BCISJ(name, ma, mb, mc, mt)  LIBDEF_BCMC_JUMP_##mc,
+  BCDEF(BCISJ)
+#undef BCISJ
+  0
+};
+
+static MSize libdef_expand_dump(uint8_t *dst, const uint8_t *src, MSize srclen)
 {
-  uint32_t i, sizebc;
-  p += 4;
-  p = libdef_uleb128(p, &sizebc);
-  p = libdef_uleb128(p, &sizebc);
-  p = libdef_uleb128(p, &sizebc);
-  for (i = 0; i < sizebc; i++, p += 4) {
-    uint8_t op = p[libbc_endian ? 3 : 0];
-    uint8_t ra = p[libbc_endian ? 2 : 1];
-    uint8_t rc = p[libbc_endian ? 1 : 2];
-    uint8_t rb = p[libbc_endian ? 0 : 3];
-    if (!LJ_DUALNUM && op == BC_ISTYPE && rc == ~LJ_TNUMX+1) {
-      op = BC_ISNUM; rc++;
+  const uint8_t *send = src + srclen;
+  uint8_t *d = dst;
+  uint32_t flags, numparams, framesize, sizeuv;
+  uint32_t sizekgc, sizekn, sizebc, sizedbg = 0;
+  const uint8_t *bc_end;
+  MSize i;
+
+  /* Copy 4-byte prototype header verbatim. */
+  flags     = *src++;  *d++ = (uint8_t)flags;
+  numparams = *src++;  *d++ = (uint8_t)numparams;
+  framesize = *src++;  *d++ = (uint8_t)framesize;
+  sizeuv    = *src++;  *d++ = (uint8_t)sizeuv;
+
+  /* Copy ULEB128 fields: sizekgc, sizekn, sizebc (and optionally sizedbg). */
+#define COPY_ULEB(out_var)                                  \
+  do {                                                      \
+    uint32_t _v = 0; int _sh = 0;                           \
+    uint8_t _b;                                             \
+    do { _b = *src++; *d++ = _b;                            \
+         _v |= (uint32_t)(_b & 0x7f) << _sh; _sh += 7;      \
+    } while (_b & 0x80);                                    \
+    (out_var) = _v;                                         \
+  } while (0)
+
+  COPY_ULEB(sizekgc);
+  COPY_ULEB(sizekn);
+  COPY_ULEB(sizebc);
+  /* Library function dumps are always written with BCDUMP_F_STRIP
+  ** (see lj_lib.c::lib_read_lfunc), so no debug-info fields follow.
+  */
+#undef COPY_ULEB
+
+  (void)numparams; (void)framesize; (void)sizeuv;
+  (void)sizekgc; (void)sizekn; (void)sizedbg;
+
+  /* Expand sizebc instructions from 4 bytes to 8 bytes. */
+  bc_end = src + (size_t)sizebc * 4;
+  for (i = 0; i < sizebc; i++, src += 4) {
+    uint8_t op = src[0];
+    uint8_t a  = src[1];
+    uint8_t c  = src[2];
+    uint8_t b  = src[3];
+    int is_ad   = (op < (uint8_t)BC__MAX) && libdef_isad[op];
+    int is_jump = (op < (uint8_t)BC__MAX) && libdef_isjump[op];
+    /* DUALNUM type fixup, mirroring legacy libdef_fixupbc. */
+    if (!LJ_DUALNUM && op == BC_ISTYPE && c == (uint8_t)(~LJ_TNUMX+1)) {
+      op = BC_ISNUM; c++;
     }
-    p[LJ_ENDIAN_SELECT(0, 3)] = op;
-    p[LJ_ENDIAN_SELECT(1, 2)] = ra;
-    p[LJ_ENDIAN_SELECT(2, 1)] = rc;
-    p[LJ_ENDIAN_SELECT(3, 0)] = rb;
+    /* Write OP + pad. */
+    d[0] = op;
+    d[1] = 0;
+    /* Write A (low byte; high byte zeroed). */
+    d[2] = a;
+    d[3] = 0;
+    if (is_ad) {
+      uint16_t d16 = (uint16_t)(c | ((uint16_t)b << 8));
+      uint32_t d32;
+      if (is_jump) {
+	/* Re-bias the jump offset:
+	**   real offset = (uint16_t)D_old - 0x8000   (signed result)
+	**   D_new       = real offset + 0x80000000   (re-biased)
+	** d16 is treated as unsigned 16-bit (the legacy on-disk encoding).
+	*/
+	int32_t off = (int32_t)d16 - 0x8000;
+	d32 = (uint32_t)(off + (int32_t)BCBIAS_J);
+      } else {
+	/* Plain unsigned 16-bit D (var/lit/pri/str/tab/...). Zero-extend. */
+	d32 = (uint32_t)d16;
+      }
+      d[4] = (uint8_t)(d32        & 0xff);
+      d[5] = (uint8_t)((d32 >> 8)  & 0xff);
+      d[6] = (uint8_t)((d32 >> 16) & 0xff);
+      d[7] = (uint8_t)((d32 >> 24) & 0xff);
+    } else {
+      d[4] = c;  d[5] = 0;
+      d[6] = b;  d[7] = 0;
+    }
+    d += 8;
   }
+  src = bc_end;
+
+  /* Copy the remainder verbatim (upvalues, kgc, knum, debug info). */
+  while (src < send) *d++ = *src++;
+
+  return (MSize)(d - dst);
 }
 
 static void libdef_lua(BuildCtx *ctx, char *p, int arg)
@@ -195,12 +344,12 @@ static void libdef_lua(BuildCtx *ctx, char *p, int arg)
       if (!strcmp(libbc_map[i].name, p)) {
 	int ofs = libbc_map[i].ofs;
 	int len = libbc_map[i+1].ofs - ofs;
+	MSize newlen;
 	obuf[2]++;  /* Bump hash table size. */
 	*optr++ = LIBINIT_LUA;
 	libdef_name(p, 0);
-	memcpy(optr, libbc_code + ofs, len);
-	libdef_fixupbc(optr);
-	optr += len;
+	newlen = libdef_expand_dump(optr, libbc_code + ofs, (MSize)len);
+	optr += newlen;
 	return;
       }
     }

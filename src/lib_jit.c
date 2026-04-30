@@ -278,7 +278,11 @@ LJLIB_CF(jit_util_funcbc)
     BCIns ins = proto_bc(pt)[pc];
     BCOp op = bc_op(ins);
     lj_assertL(op < BC__MAX, "bad bytecode op %d", op);
-    setintV(L->top, ins);
+    /* TODO[bc64]: ins is now 64-bit; lossy cast to 32-bit for the debug API.
+    ** Sufficient for stage-1 (interpreter only, JIT off). Future change should
+    ** return as a Lua number / cdata to preserve full 64-bit ins, especially
+    ** for AD instructions where bc_d() can exceed 0xFFFF. */
+    setintV(L->top, (int32_t)ins);
     setintV(L->top+1, lj_bc_mode[op]);
     L->top += 2;
     if (lineinfo) {
@@ -779,7 +783,12 @@ static uint32_t jit_cpudetect(void)
 static void jit_init(lua_State *L)
 {
   jit_State *J = L2J(L);
-  J->flags = jit_cpudetect() | JIT_F_ON | JIT_F_OPT_DEFAULT;
+  /* 64-bit bytecode fork: JIT compiler has not been retargeted to the new
+  ** instruction format, so it is disabled by default. The interpreter
+  ** still works correctly with the new bytecode. Use jit.on() to opt in
+  ** at your own risk (will likely crash on the first compiled trace).
+  */
+  J->flags = jit_cpudetect() | JIT_F_OPT_DEFAULT;  /* JIT_F_ON omitted. */
   memcpy(J->param, jit_param_default, sizeof(J->param));
   lj_dispatch_update(G(L));
 }

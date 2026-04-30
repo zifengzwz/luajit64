@@ -9,52 +9,74 @@
 #include "lj_def.h"
 #include "lj_arch.h"
 
-/* Bytecode instruction format, 32 bit wide, fields of 8 or 16 bit:
+/* Bytecode instruction format, 64 bit wide, fields of 8/16/32 bit:
 **
-** +----+----+----+----+
-** | B  | C  | A  | OP | Format ABC
-** +----+----+----+----+
-** |    D    | A  | OP | Format AD
-** +--------------------
-** MSB               LSB
+** +--------+--------+--------+----+----+
+** |   B    |   C    |   A    |pad | OP | Format ABC  (B/C/A: 16 bit each)
+** +--------+--------+--------+----+----+
+** |        D        |   A    |pad | OP | Format AD   (D: 32 bit, A: 16 bit)
+** +--------+--------+--------+----+----+
+** MSB                                LSB
+**
+** Layout (LSB->MSB):
+**   bits  0..7   OP   (8)
+**   bits  8..15  pad  (8, reserved, must be 0)
+**   bits 16..31  A    (16)
+**   bits 32..47  C    (16)   for ABC,
+**   bits 32..63  D    (32)   for AD
+**   bits 48..63  B    (16)   for ABC
 **
 ** In-memory instructions are always stored in host byte order.
 */
 
 /* Operand ranges and related constants. */
-#define BCMAX_A		0xff
-#define BCMAX_B		0xff
-#define BCMAX_C		0xff
-#define BCMAX_D		0xffff
-#define BCBIAS_J	0x8000
+#define BCMAX_A		0xffff
+#define BCMAX_B		0xffff
+#define BCMAX_C		0xffff
+#define BCMAX_D		0xffffffffu
+#define BCBIAS_J	0x80000000u
 #define NO_REG		BCMAX_A
 #define NO_JMP		(~(BCPos)0)
 
 /* Macros to get instruction fields. */
-#define bc_op(i)	((BCOp)((i)&0xff))
-#define bc_a(i)		((BCReg)(((i)>>8)&0xff))
-#define bc_b(i)		((BCReg)((i)>>24))
-#define bc_c(i)		((BCReg)(((i)>>16)&0xff))
-#define bc_d(i)		((BCReg)((i)>>16))
-#define bc_j(i)		((ptrdiff_t)bc_d(i)-BCBIAS_J)
+#define bc_op(i)	((BCOp)((i) & 0xff))
+#define bc_a(i)		((BCReg)(((i) >> 16) & 0xffff))
+#define bc_b(i)		((BCReg)((i) >> 48))
+#define bc_c(i)		((BCReg)(((i) >> 32) & 0xffff))
+#define bc_d(i)		((BCReg)((i) >> 32))
+#define bc_j(i)		((ptrdiff_t)bc_d(i) - BCBIAS_J)
 
-/* Macros to set instruction fields. */
-#define setbc_byte(p, x, ofs) \
-  ((uint8_t *)(p))[LJ_ENDIAN_SELECT(ofs, 3-ofs)] = (uint8_t)(x)
-#define setbc_op(p, x)	setbc_byte(p, (x), 0)
-#define setbc_a(p, x)	setbc_byte(p, (x), 1)
-#define setbc_b(p, x)	setbc_byte(p, (x), 3)
-#define setbc_c(p, x)	setbc_byte(p, (x), 2)
+/* Macros to set instruction fields (mask read-modify-write, endian-agnostic).
+** Note: cast through (BCIns *) to discard const for compatibility with the
+** original setbc_byte() macro, which used ((uint8_t *)(p))[..] and silently
+** dropped const at call sites such as lj_trace.c (J->pc is const BCIns *).
+*/
+#define setbc_op(p, x) \
+  (*(BCIns *)(p) = ((*(BCIns *)(p)) & ~(BCIns)0xff) | (BCIns)((x) & 0xff))
+#define setbc_a(p, x) \
+  (*(BCIns *)(p) = ((*(BCIns *)(p)) & ~((BCIns)0xffff << 16)) | \
+   ((BCIns)((x) & 0xffff) << 16))
+#define setbc_b(p, x) \
+  (*(BCIns *)(p) = ((*(BCIns *)(p)) & ~((BCIns)0xffff << 48)) | \
+   ((BCIns)((x) & 0xffff) << 48))
+#define setbc_c(p, x) \
+  (*(BCIns *)(p) = ((*(BCIns *)(p)) & ~((BCIns)0xffff << 32)) | \
+   ((BCIns)((x) & 0xffff) << 32))
 #define setbc_d(p, x) \
-  ((uint16_t *)(p))[LJ_ENDIAN_SELECT(1, 0)] = (uint16_t)(x)
-#define setbc_j(p, x)	setbc_d(p, (BCPos)((int32_t)(x)+BCBIAS_J))
+  (*(BCIns *)(p) = ((*(BCIns *)(p)) & ~((BCIns)0xffffffffu << 32)) | \
+   ((BCIns)((x) & 0xffffffffu) << 32))
+#define setbc_j(p, x) \
+  setbc_d(p, (BCPos)((uint32_t)(int32_t)(x) + (uint32_t)BCBIAS_J))
 
 /* Macros to compose instructions. */
 #define BCINS_ABC(o, a, b, c) \
-  (((BCIns)(o))|((BCIns)(a)<<8)|((BCIns)(b)<<24)|((BCIns)(c)<<16))
+  (((BCIns)(o)) | ((BCIns)((a) & 0xffff) << 16) | \
+   ((BCIns)((c) & 0xffff) << 32) | ((BCIns)((b) & 0xffff) << 48))
 #define BCINS_AD(o, a, d) \
-  (((BCIns)(o))|((BCIns)(a)<<8)|((BCIns)(d)<<16))
-#define BCINS_AJ(o, a, j)	BCINS_AD(o, a, (BCPos)((int32_t)(j)+BCBIAS_J))
+  (((BCIns)(o)) | ((BCIns)((a) & 0xffff) << 16) | \
+   ((BCIns)((d) & 0xffffffffu) << 32))
+#define BCINS_AJ(o, a, j) \
+  BCINS_AD(o, a, (BCPos)((uint32_t)(int32_t)(j) + (uint32_t)BCBIAS_J))
 
 /* Bytecode instruction definition. Order matters, see below.
 **

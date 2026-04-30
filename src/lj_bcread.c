@@ -292,7 +292,7 @@ static void bcread_bytecode(LexState *ls, GCproto *pt, MSize sizebc)
   /* Swap bytecode instructions if the endianess differs. */
   if (bcread_swap(ls)) {
     MSize i;
-    for (i = 1; i < sizebc; i++) bc[i] = lj_bswap(bc[i]);
+    for (i = 1; i < sizebc; i++) bc[i] = lj_bswap64(bc[i]);
   }
 }
 

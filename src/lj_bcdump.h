@@ -15,7 +15,7 @@
 ** dump   = header proto+ 0U
 ** header = ESC 'L' 'J' versionB flagsU [namelenU nameB*]
 ** proto  = lengthU pdata
-** pdata  = phead bcinsW* uvdataH* kgc* knum* [debugB*]
+** pdata  = phead bcinsX* uvdataH* kgc* knum* [debugB*]
 ** phead  = flagsB numparamsB framesizeB numuvB numkgcU numknU numbcU
 **          [debuglenU [firstlineU numlineU]]
 ** kgc    = kgctypeU { ktab | (loU hiU) | (rloU rhiU iloU ihiU) | strB* }
@@ -25,7 +25,13 @@
 ** khash  = ktabk ktabk
 ** ktabk  = ktabtypeU { intU | (loU hiU) | strB* }
 **
-** B = 8 bit, H = 16 bit, W = 32 bit, U = ULEB128 of W, U0/U1 = ULEB128 of W+1
+** B = 8 bit, H = 16 bit, W = 32 bit, X = 64 bit (BCIns),
+** U = ULEB128 of W, U0/U1 = ULEB128 of W+1
+**
+** NOTE: Bytecode instructions are 64 bits wide in this fork (BCIns is
+** uint64_t). The on-disk dump therefore stores 8 bytes per instruction.
+** This is a backwards-incompatible change vs. upstream LuaJIT, which is
+** signalled by bumping BCDUMP_VERSION below.
 */
 
 /* Bytecode dump header. */
@@ -35,8 +41,11 @@
 
 /* If you perform *any* kind of private modifications to the bytecode itself
 ** or to the dump format, you *must* set BCDUMP_VERSION to 0x80 or higher.
+**
+** Version 3 (this fork): 64-bit BCIns, OP|pad(16) | A(16) | C(16) | B(16)
+**                        / OP|pad(16) | A(16) | D(32). BCBIAS_J=0x80000000.
 */
-#define BCDUMP_VERSION		2
+#define BCDUMP_VERSION		3
 
 /* Compatibility flags. */
 #define BCDUMP_F_BE		0x01

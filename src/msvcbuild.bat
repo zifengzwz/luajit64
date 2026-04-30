@@ -143,10 +143,10 @@ if exist %LJDLLNAME%.manifest^
 
 %LJCOMPILE% luajit.c
 @if errorlevel 1 goto :BAD
-%LJLINK% /OUT:luajit.exe luajit.obj %LJLIBNAME%
+%LJLINK% /OUT:luajit64.exe luajit.obj %LJLIBNAME%
 @if errorlevel 1 goto :BAD
-if exist luajit.exe.manifest^
-  %LJMT% -manifest luajit.exe.manifest -outputresource:luajit.exe
+if exist luajit64.exe.manifest^
+  %LJMT% -manifest luajit64.exe.manifest -outputresource:luajit64.exe
 
 @del *.obj *.manifest minilua.exe buildvm.exe
 @del host\buildvm_arch.h
